@@ -34,9 +34,13 @@ Usage:
     # Skip the Gemini OCR pass entirely (panels only, no text/lookup data):
     python3 convert_manga.py --input ./manga_pages/ --output-dir ./out/ --no-ocr
 
+    # Smallest X3 output: write only panel snippets (no duplicate full-page images):
+    python3 convert_manga.py --input ./manga_pages/ --output-dir ./out/ \
+        --x3 --panels-only --no-ocr
+
 Output (in --output-dir):
     page_0000.jpg, page_0001.jpg, ...   canonical, trivially-sortable page
-                                         images (device scans these directly)
+                                         images (omitted with --panels-only)
     panels/p<page>_<panel>.jpg          cropped panel images for panel-zoom, in their own
                                          subfolder so the book folder holds only page images:
                                          the device walks every entry of the book folder when
@@ -1132,6 +1136,13 @@ def main():
     parser.add_argument("--panel-margin", type=int, default=10, help="Pixels of margin added around cropped panels")
     parser.add_argument("--max-pages", type=int, help="Only process the first N pages (for testing)")
     parser.add_argument(
+        "--panels-only",
+        action="store_true",
+        help="Write only cropped panel snippets, omitting duplicate full-page images. Full-page detections are "
+             "kept as crops so every page remains readable. Requires firmware with panels-only support; this "
+             "tree includes it. Recommended for the X3 when compact output and continuous panel reading matter.",
+    )
+    parser.add_argument(
         "--toc-file",
         help='Chapter list: one per line, "<page_index>\\t<title>" (0-based, referring to the FINAL '
              "page order this tool produces -- not a source filename or printed page number). "
@@ -1244,8 +1255,12 @@ def main():
             panel_scale_x = source_img.width / img_w
             panel_scale_y = source_img.height / img_h
 
-            # Write the page to a canonical, trivially-sortable filename.
-            if args.mono:
+            # Write the page to a canonical, trivially-sortable filename unless the user asked
+            # for compact panel-only output. In panel-only mode the loop below deliberately
+            # writes even a full-page detection as p<page>_0, so no page becomes unreadable.
+            if args.panels_only:
+                pass
+            elif args.mono:
                 # 1-bit Floyd-Steinberg-dithered BMP (convert("1") defaults to FS dithering). The
                 # device renders these BW-only, in a single fast refresh.
                 img.convert("L").convert("1").save(os.path.join(args.output_dir, f"page_{page_idx:04d}.bmp"), "BMP")
@@ -1288,7 +1303,7 @@ def main():
                 # whole page -- the renderer falls back to displaying the
                 # full-page image anyway, so the crop is a redundant copy.
                 panel_path = None
-                if not is_full_page_panel(box, img_w, img_h):
+                if args.panels_only or not is_full_page_panel(box, img_w, img_h):
                     cropped = source_img.crop((
                         max(0, round(mx1 * panel_scale_x)),
                         max(0, round(my1 * panel_scale_y)),
@@ -1369,6 +1384,8 @@ def main():
         print(f"  Total: {(idx_size + dat_size) / 1024:.1f} KB")
         print(f"  Panels: {total_panels} ({total_panels / max(len(pages), 1):.1f}/page avg)")
         print(f"  Text blocks: {total_text_blocks}")
+        if args.panels_only:
+            print("  Layout: panel snippets only (full-page images omitted)")
         if toc_entries:
             write_toc(args.output_dir, toc_entries)
         print("Done.")

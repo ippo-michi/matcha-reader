@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <memory>
 
 #include "EpubProgressUtil.h"
@@ -152,24 +153,29 @@ void RecentBooksActivity::loadRecentBooks() {
   // Recents first (most recently opened first), then the persisted result of the last card
   // scan -- instantly, without touching the card tree. A background re-scan (see
   // startLibraryScan) refreshes and re-persists the list afterwards.
-  recentBooks = RECENT_BOOKS.getBooks();
+  std::vector<RecentBook> recents = RECENT_BOOKS.getBooks();
 
   {
     RecentBooksStore cache;
     if (cache.loadFromPath(LIBRARY_CACHE_JSON)) {
-      for (const auto& b : cache.getBooks()) {
+      // Reuse the cache store's vector allocation. Copying up to 2048 strings into a second
+      // vector during a Library click creates a large transient heap spike on the X3.
+      std::vector<RecentBook> cached = cache.takeBooks();
+      for (auto& recent : recents) {
         const auto known =
-            std::find_if(recentBooks.begin(), recentBooks.end(), [&b](const auto& r) { return r.path == b.path; });
-        if (known == recentBooks.end()) {
-          recentBooks.push_back(b);
-        } else {
-          if (known->title.empty()) known->title = b.title;
-          if (known->author.empty()) known->author = b.author;
-          if (known->coverBmpPath.empty()) known->coverBmpPath = b.coverBmpPath;
-        }
+            std::find_if(cached.begin(), cached.end(), [&recent](const auto& b) { return b.path == recent.path; });
+        if (known == cached.end()) continue;
+        if (recent.title.empty()) recent.title = known->title;
+        if (recent.author.empty()) recent.author = known->author;
+        if (recent.coverBmpPath.empty()) recent.coverBmpPath = known->coverBmpPath;
+        cached.erase(known);
       }
+      cached.insert(cached.begin(), std::make_move_iterator(recents.begin()), std::make_move_iterator(recents.end()));
+      recentBooks = std::move(cached);
+      return;
     }
   }
+  recentBooks = std::move(recents);
 }
 
 namespace {
@@ -262,13 +268,11 @@ bool RecentBooksActivity::stepLibraryScan() {
   if (!scan_.active) return false;
 
   if (!scan_.walkDone) {
-    if (scan_.dirStack.empty()) {
+    if (!scan_.activeDir && scan_.dirStack.empty()) {
       scan_.walkDone = true;
       return false;
     }
-    std::string dirPath = std::move(scan_.dirStack.back());
-    scan_.dirStack.pop_back();
-    scanOneDirectory(dirPath);
+    scanDirectorySlice();
     return false;
   }
 
@@ -431,24 +435,42 @@ bool RecentBooksActivity::stepLibraryScan() {
   return true;
 }
 
-void RecentBooksActivity::scanOneDirectory(const std::string& dirPath) {
-  constexpr size_t NAME_BUF = 500;
-  auto nameBuf = makeUniqueNoThrow<char[]>(NAME_BUF);
-  if (!nameBuf) return;
+void RecentBooksActivity::scanDirectorySlice() {
+  // An SD directory entry can cost ~85ms in a large FAT directory. Limiting a tick to two
+  // entries keeps input polling moving even when a manga folder contains thousands of files.
+  constexpr size_t ENTRIES_PER_SLICE = 2;
 
-  auto dir = Storage.open(dirPath.c_str());
-  if (!dir || !dir.isDirectory()) return;
-  dir.rewindDirectory();
+  if (!scan_.activeDir) {
+    scan_.activeDirPath = std::move(scan_.dirStack.back());
+    scan_.dirStack.pop_back();
+    scan_.activeDir = Storage.open(scan_.activeDirPath.c_str());
+    if (!scan_.activeDir || !scan_.activeDir.isDirectory()) {
+      scan_.activeDir = HalFile{};
+      scan_.activeDirPath.clear();
+      return;
+    }
+    scan_.activeDir.rewindDirectory();
+  }
 
-  for (auto f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    f.getName(nameBuf.get(), NAME_BUF);
-    if (nameBuf[0] == '.') continue;
-    if (strcmp(nameBuf.get(), "System Volume Information") == 0) continue;
-    if (strcmp(nameBuf.get(), "dict") == 0) continue;
+  size_t entriesRead = 0;
+  while (entriesRead < ENTRIES_PER_SLICE) {
+    auto f = scan_.activeDir.openNextFile();
+    if (!f) {
+      scan_.activeDir.close();
+      scan_.activeDir = HalFile{};
+      scan_.activeDirPath.clear();
+      return;
+    }
+    entriesRead++;
+    f.getName(scan_.nameBuf.data(), scan_.nameBuf.size());
+    const char* name = scan_.nameBuf.data();
+    if (name[0] == '.') continue;
+    if (strcmp(name, "System Volume Information") == 0) continue;
+    if (strcmp(name, "dict") == 0) continue;
 
-    std::string fullPath = dirPath;
+    std::string fullPath = scan_.activeDirPath;
     if (fullPath.back() != '/') fullPath += '/';
-    fullPath += nameBuf.get();
+    fullPath += name;
 
     if (f.isDirectory()) {
       const std::string idxPath = fullPath + "/panels.idx";
@@ -461,7 +483,7 @@ void RecentBooksActivity::scanOneDirectory(const std::string& dirPath) {
       // Manga folder: seed from the current list (recents/cache) so stored covers are honored.
       RecentBook entry;
       entry.path = fullPath;
-      entry.title = std::string(nameBuf.get());
+      entry.title = std::string(name);
       const auto cached = std::find_if(recentBooks.begin(), recentBooks.end(),
                                        [&fullPath](const auto& r) { return r.path == fullPath; });
       if (cached != recentBooks.end()) entry = *cached;
@@ -517,11 +539,11 @@ void RecentBooksActivity::scanOneDirectory(const std::string& dirPath) {
       continue;
     }
 
-    std::string_view fn{nameBuf.get()};
+    std::string_view fn{name};
     if (!FsHelpers::hasEpubExtension(fn) && !FsHelpers::hasXtcExtension(fn) && !FsHelpers::hasTxtExtension(fn) &&
         !FsHelpers::hasMarkdownExtension(fn))
       continue;
-    if (isCrashReportFile(nameBuf.get())) continue;
+    if (isCrashReportFile(name)) continue;
 
     RecentBook book;
     book.path = fullPath;
@@ -533,7 +555,6 @@ void RecentBooksActivity::scanOneDirectory(const std::string& dirPath) {
     if (cached != recentBooks.end()) book = *cached;
     scan_.results.push_back(std::move(book));
   }
-  dir.close();
 }
 
 void RecentBooksActivity::applyLibraryScan() {

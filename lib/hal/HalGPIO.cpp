@@ -117,10 +117,11 @@ void HalGPIO::begin() {
   _deviceType = detectDeviceTypeWithFingerprint();
   BoardConfig::selectDevice(deviceIsX3() ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
 
-  // Resolve the per-batch controller before SPI owns the display pins. FreeInk
-  // checks the OEM hw_calib/screenType value first, then falls back to its
-  // two-pass display-bus probe. X3's facade keys panel selection off the sibling
-  // board profile, so preserve a detected UC8279 through setDisplayX3().
+  // Resolve the per-batch controller before SPI owns the display pins. Current FreeInk uses
+  // the live two-pass display-bus probe as the verdict; OEM NVS calibration is diagnostic only
+  // because a full flash or stale factory value can disagree with the newer UC8279 panel.
+  // X3's facade keys panel selection off the sibling board profile, so preserve a detected
+  // UC8279 through setDisplayX3().
   freeink::applyXteinkDisplayController();
   if (deviceIsX3() && BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8279) {
     BoardConfig::selectDevice(BoardConfig::Board::XteinkX3Uc8279);

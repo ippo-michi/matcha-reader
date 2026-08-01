@@ -117,7 +117,7 @@ Any Yomitan dictionary, jmdict-simplified JSON, or MDict `.mdx` works as input. 
 
 For regular StarDict dictionaries, use `/dictionaries/<language>/<dictionary>/` (for example `/dictionaries/en/oxford/`). Tagged EPUBs select the first matching language folder automatically; the Reader setting is only used for EPUBs without a language tag. Japanese (`ja`) always uses the Yomitan files in `/dictionaries/jp/`.
 
-**3. Install Japanese fonts** (optional). The built-in Noto Serif/Sans handle Japanese fine; a dedicated font looks better. Convert any TTF/OTF with the [browser tool](https://eszter007.github.io/matcha-reader-tools/) and place the result in `/.fonts/<Family>/regular.cpfont`. UDDigiKyokasho is picked as the default when present.
+**3. Install Japanese fonts** (optional). The built-in Noto Serif/Sans handle Japanese fine; a dedicated font looks better. Convert any TTF/OTF with the [browser tool](https://eszter007.github.io/matcha-reader-tools/) or the checked-in `lib/EpdFont/scripts/fontconvert_sdcard.py`, then copy the generated `<Family>_<size>.cpfont` files into `/.fonts/<Family>/`. The size suffix is required by the firmware registry; a file named `regular.cpfont` is ignored. Include sizes 8, 10, and 12 for Japanese titles/UI plus your preferred reading sizes. UDDigiKyokasho is picked as the default when present.
 
 An SD-card Japanese font also serves as a global glyph fallback, so rare kanji in dictionary entries and book titles render instead of coming out blank.
 
@@ -138,7 +138,7 @@ export GEMINI_API_KEY=$(cat /path/to/gemini.key)
 python3 tools/manga_convert/convert_manga.py \
   --input /path/to/manga.cbz \
   --output-dir /path/to/sd/manga/MangaTitle/ \
-  --x4
+  --x3 --panels-only
 ```
 
 Panels are found with a YOLO model trained on Manga109 ([leoxs22/manga-panel-detector-yolo26n](https://huggingface.co/leoxs22/manga-panel-detector-yolo26n)); without `ultralytics` it falls back to a white-gutter heuristic. Gemini then reads each panel's text and translates it, both stored in the output so the device needs no network.
@@ -148,6 +148,7 @@ Panels are found with a YOLO model trained on Manga109 ([leoxs22/manga-panel-det
 | Flag | Effect |
 | --- | --- |
 | `--x4` / `--x3` | Scale pages and panels to the device screen. Smaller files, faster page turns, nothing lost — the screen can't show more. |
+| `--panels-only` | Store only readable panel snippets, including splash pages as a single snippet. Omits duplicate full-page files and opens directly in continuous panel mode. |
 | `--mono` | 1-bit dithered BMP. Paints in one fast black-and-white pass; ideal for line art, less so for heavy screentone. |
 | `--no-ocr` | Panel boxes only — no Gemini calls, no text or translations. |
 | `--max-pages N` | Convert the first N pages as a cheap test run. |
@@ -155,7 +156,7 @@ Panels are found with a YOLO model trained on Manga109 ([leoxs22/manga-panel-det
 
 `--help` lists the rest. The API key is never written into the output; pass it at runtime.
 
-The result is a folder of page images, panel crops, and three small binaries (`panels.idx`, `panels.dat`, `meta.bin`). Drop it anywhere on the card — the Library finds any folder containing `panels.idx`, at any depth.
+The result is a folder of panel crops, optional page images, and three small binaries (`panels.idx`, `panels.dat`, `meta.bin`). Drop it anywhere on the card — the Library finds any folder containing `panels.idx`, at any depth.
 
 ---
 

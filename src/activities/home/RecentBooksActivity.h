@@ -1,6 +1,8 @@
 #pragma once
+#include <HalStorage.h>
 #include <I18n.h>
 
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -119,7 +121,7 @@ class RecentBooksActivity final : public Activity {
   RenderedState lastRendered;
 
   // Background library scan (stale-while-revalidate): onEnter() shows the persisted book list
-  // instantly; loop() re-walks the SD card one directory per slice and applies/saves changes
+  // instantly; loop() re-walks the SD card a few directory entries per slice and applies/saves changes
   // when the pass completes. The full walk used to run synchronously on every Library open --
   // every folder on the card plus per-book cover repair -- which dominated the open time.
   struct LibraryScanState {
@@ -127,6 +129,11 @@ class RecentBooksActivity final : public Activity {
     bool walkDone = false;
     std::vector<std::string> dirStack;
     std::vector<RecentBook> results;
+    HalFile activeDir;
+    std::string activeDirPath;
+    // Reused by every slice. Keeping this fixed-size buffer in the activity avoids a 500-byte
+    // heap allocation/free for every directory and the fragmentation that caused on the X3.
+    std::array<char, 500> nameBuf{};
     size_t thumbIndex = 0;  // EPUB/XTC cover-thumb pass cursor over results
   };
   LibraryScanState scan_;
@@ -158,7 +165,7 @@ class RecentBooksActivity final : public Activity {
   void applyLibraryScan();
   void finishLibraryScan();
   uint32_t lastInputMs = 0;  // idle gate for the heavy thumb/indexing slices
-  void scanOneDirectory(const std::string& dirPath);
+  void scanDirectorySlice();
   // Progress percentages fill progressively from loop() (PROGRESS_PENDING sentinel) instead of
   // ~5 file reads per book up front.
   static constexpr int PROGRESS_PENDING = -2;

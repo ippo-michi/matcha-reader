@@ -67,6 +67,11 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   // Get the list of recent books (most recent first)
   const std::vector<RecentBook>& getBooks() const { return recentBooks; }
 
+  // Transfer the loaded list without copying every title/path. The Library cache can contain
+  // thousands of entries, so callers that are going to consume the store should reuse its
+  // vector allocation instead of duplicating it on the X3's small heap.
+  std::vector<RecentBook> takeBooks() { return std::move(recentBooks); }
+
   // Get the count of recent books
   int getCount() const { return static_cast<int>(recentBooks.size()); }
 

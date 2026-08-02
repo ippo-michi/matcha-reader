@@ -145,9 +145,7 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
   return RecentBook{path, "", "", ""};
 }
 
-bool RecentBooksStore::saveToPath(const char* path) const {
-  return saveBooksToPath(recentBooks, path);
-}
+bool RecentBooksStore::saveToPath(const char* path) const { return saveBooksToPath(recentBooks, path); }
 
 bool RecentBooksStore::saveBooksToPath(const std::vector<RecentBook>& books, const char* path) {
   Storage.mkdir("/.crosspoint");

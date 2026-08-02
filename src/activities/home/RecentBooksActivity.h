@@ -127,6 +127,10 @@ class RecentBooksActivity final : public Activity {
   struct LibraryScanState {
     bool active = false;
     bool walkDone = false;
+    // The renderer's persistent compressed-glyph slab is useful during navigation, but the
+    // idle catalog walk needs that contiguous heap more. Reset after input so the next idle
+    // slice releases any glyphs allocated by the intervening render.
+    bool fontMemoryReleasedForWalk = false;
     std::vector<std::string> dirStack;
     std::vector<RecentBook> results;
     HalFile activeDir;
@@ -166,6 +170,7 @@ class RecentBooksActivity final : public Activity {
   void finishLibraryScan();
   uint32_t lastInputMs = 0;  // idle gate for the heavy thumb/indexing slices
   void scanDirectorySlice();
+  bool releaseWalkFontMemory();
   // Progress percentages fill progressively from loop() (PROGRESS_PENDING sentinel) instead of
   // ~5 file reads per book up front.
   static constexpr int PROGRESS_PENDING = -2;

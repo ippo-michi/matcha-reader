@@ -264,6 +264,17 @@ void RecentBooksActivity::startLibraryScan() {
   scan_.dirStack.push_back("/");
 }
 
+bool RecentBooksActivity::releaseWalkFontMemory() {
+  if (scan_.fontMemoryReleasedForWalk) return true;
+  // peek()-then-release has a race with the render task. The non-blocking lock makes an active
+  // render defer this scan slice instead of allowing the cache to be freed under it.
+  RenderLock lock{RenderLock::Try{}};
+  if (!lock.held()) return false;
+  if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+  scan_.fontMemoryReleasedForWalk = true;
+  return true;
+}
+
 bool RecentBooksActivity::stepLibraryScan() {
   if (!scan_.active) return false;
 
@@ -276,12 +287,19 @@ bool RecentBooksActivity::stepLibraryScan() {
     return false;
   }
 
-  // EPUB/XTC cover-thumb pass, one book per slice.
+  // EPUB/XTC cover-thumb pass, one book per slice. The completed walk has already merged its
+  // results into recentBooks and released the duplicate scan vector; copy just the current
+  // record under the render lock so the expensive work never races the render task.
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int thumbH =
       gridCoverHeight_ > 0 ? gridCoverHeight_ : (metrics.homeCoverHeight > 0 ? metrics.homeCoverHeight : 120);
-  while (scan_.thumbIndex < scan_.results.size()) {
-    RecentBook& book = scan_.results[scan_.thumbIndex];
+  while (true) {
+    RecentBook book;
+    {
+      RenderLock lock;
+      if (scan_.thumbIndex >= recentBooks.size()) break;
+      book = recentBooks[scan_.thumbIndex];
+    }
     // A [HEIGHT]-templated path does NOT mean the thumb exists at the height this theme asks
     // for: switching themes changes homeCoverHeight, and skipping on "has a cover path" left
     // every EPUB in the Library without a cover until it was opened again (device report:
@@ -316,7 +334,10 @@ bool RecentBooksActivity::stepLibraryScan() {
     // Manga: the walk only recorded the raw page image; convert it here, where the pass is
     // idle-gated and cancellable, instead of freezing the walk.
     if (coverIsRawImage || mangaThumbMissing) {
-      if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+      {
+        RenderLock lock;
+        if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+      }
       thumbGenStartedMs = millis();
       const std::string thumb =
           ensureMangaCoverThumb(book.path, thumbH, metrics.homeCoverHeight, &thumbGenShouldCancel, this);
@@ -383,6 +404,18 @@ bool RecentBooksActivity::stepLibraryScan() {
     if (indexSaysThumbOk || thumbHeightValid(thumbPath, thumbH)) {
       book.coverBmpPath = cachePath + "/thumb_[HEIGHT].bmp";
       recordIndexEntry(book.path, bookSize, bookStamp, thumbH, true);
+      bool coverChanged = false;
+      {
+        RenderLock lock;
+        const auto live = std::find_if(recentBooks.begin(), recentBooks.end(),
+                                       [&book](const auto& r) { return r.path == book.path; });
+        if (live != recentBooks.end() && live->coverBmpPath != book.coverBmpPath) {
+          live->coverBmpPath = book.coverBmpPath;
+          lastRendered.valid = false;
+          coverChanged = true;
+        }
+      }
+      if (coverChanged) requestUpdate();
       scan_.thumbIndex++;
       continue;
     }
@@ -391,7 +424,10 @@ bool RecentBooksActivity::stepLibraryScan() {
     // largest free block can fall below that -- the decode then stops midway and produced a
     // streaked, half-black thumbnail (user report). Fonts reload lazily afterwards. Same step
     // the home screen already takes before generating XTC thumbs.
-    if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+    {
+      RenderLock lock;
+      if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+    }
     Storage.remove(thumbPath.c_str());  // validated stale above; generators otherwise return early
     thumbGenStartedMs = millis();
     bool generated = false;
@@ -560,48 +596,63 @@ void RecentBooksActivity::scanDirectorySlice() {
 void RecentBooksActivity::applyLibraryScan() {
   // Rebuild the list as recents + this pass's results: cached entries whose files vanished
   // drop out, covers repaired by the scan take effect, and the cache is re-persisted.
-  std::vector<RecentBook> fresh = RECENT_BOOKS.getBooks();
-  for (const auto& r : scan_.results) {
-    const auto existing = std::find_if(fresh.begin(), fresh.end(), [&r](const auto& e) { return e.path == r.path; });
-    if (existing != fresh.end()) {
-      if (!r.coverBmpPath.empty()) existing->coverBmpPath = r.coverBmpPath;
+  // Rendering has finished before loop() enters this function. Release its persistent glyph
+  // slab first: the old implementation held two complete catalogs, then constructed a third
+  // one here. A populated card exhausted the X3 heap (the crash report's repeated ~16KB FDC
+  // failures), and the following vector growth aborted the firmware.
+  RenderLock lock;  // the render task reads recentBooks concurrently
+  if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+  const auto& recents = RECENT_BOOKS.getBooks();
+
+  // scan_.results already owns exactly the allocation the final catalog needs. Move each recent
+  // entry to the front (in reverse order so its ordering is preserved), filling its metadata,
+  // then swap the two catalogs. std::rotate moves strings without allocating.
+  for (auto recent = recents.rbegin(); recent != recents.rend(); ++recent) {
+    const auto scanned = std::find_if(scan_.results.begin(), scan_.results.end(),
+                                      [&](const RecentBook& book) { return book.path == recent->path; });
+    if (scanned != scan_.results.end()) {
+      if (!recent->title.empty()) scanned->title = recent->title;
+      if (!recent->author.empty()) scanned->author = recent->author;
+      if (scanned->coverBmpPath.empty()) scanned->coverBmpPath = recent->coverBmpPath;
+      std::rotate(scan_.results.begin(), scanned, scanned + 1);
     } else {
-      fresh.push_back(r);
+      // Normally impossible because onEnter() prunes missing recents and the walk finds every
+      // supported book. Preserve a valid book in a deliberately hidden folder as before.
+      scan_.results.insert(scan_.results.begin(), *recent);
     }
   }
 
-  bool changed = fresh.size() != recentBooks.size();
+  bool changed = scan_.results.size() != recentBooks.size();
   if (!changed) {
-    for (size_t i = 0; i < fresh.size(); i++) {
-      if (fresh[i].path != recentBooks[i].path || fresh[i].coverBmpPath != recentBooks[i].coverBmpPath) {
+    for (size_t i = 0; i < scan_.results.size(); i++) {
+      if (scan_.results[i].path != recentBooks[i].path ||
+          scan_.results[i].coverBmpPath != recentBooks[i].coverBmpPath) {
         changed = true;
         break;
       }
     }
   }
 
-  if (changed) {
-    {
-      RenderLock lock;  // the render task reads these lists concurrently
-      recentBooks = std::move(fresh);
-      markAllProgressPending();
-      if (shelvesLoaded) loadShelves();
-      lastRendered.valid = false;
-      LOG_DBG("RBA", "Library scan applied: %u books", static_cast<unsigned>(recentBooks.size()));
-    }
-    // Request outside the RenderLock scope; scan_.results stays alive either way: the idle-time
-    // thumb pass still iterates it, and the cache is persisted in finishLibraryScan().
-    requestUpdate();
-  }
+  recentBooks.swap(scan_.results);
+  // The thumbnail pass now works from recentBooks one record at a time, so drop the duplicate
+  // catalog immediately instead of retaining every path/title for the rest of the idle pass.
+  std::vector<RecentBook>().swap(scan_.results);
+
+  if (!changed) return;
+  markAllProgressPending();
+  if (shelvesLoaded) loadShelves();
+  lastRendered.valid = false;
+  LOG_DBG("RBA", "Library scan applied: %u books", static_cast<unsigned>(recentBooks.size()));
+  lock.unlock();
+  requestUpdate();
 }
 
 void RecentBooksActivity::finishLibraryScan() {
   saveLibraryIndex();
-  RecentBooksStore cache;
-  cache.setBooks(scan_.results);
-  cache.saveToPath(LIBRARY_CACHE_JSON);
-  scan_.results.clear();
-  scan_.results.shrink_to_fit();
+  // Stream the live catalog directly. setBooks(scan_.results)+PersistableStore serialization
+  // used to allocate another full vector, JsonDocument, and JSON String at the exact point the
+  // long-running scan had already fragmented the X3 heap.
+  RecentBooksStore::saveBooksToPath(recentBooks, LIBRARY_CACHE_JSON);
 }
 
 void RecentBooksActivity::loadBookProgress() {
@@ -885,6 +936,12 @@ void RecentBooksActivity::onEnter() {
 
 void RecentBooksActivity::onExit() {
   Activity::onExit();
+  // activeDir is intentionally kept open between scan slices; close that member handle when a
+  // button leaves Library before the walk naturally reaches the end of the directory.
+  if (scan_.activeDir) scan_.activeDir.close();
+  scan_ = LibraryScanState{};
+  libraryIndex_.clear();
+  libraryIndex_.shrink_to_fit();
   recentBooks.clear();
   bookProgress.clear();
   shelves.clear();
@@ -1039,7 +1096,10 @@ void RecentBooksActivity::loop() {
   // the moment the walk completes so a new book appears within a second. The thumb/metadata
   // slices are HEAVY (a new epub costs full metadata indexing + a cover decode, ~2-3s
   // observed) -- they only run while the user is idle so a press never lands mid-slice.
-  if (mappedInput.wasAnyPressed()) lastInputMs = millis();
+  if (mappedInput.wasAnyPressed()) {
+    lastInputMs = millis();
+    scan_.fontMemoryReleasedForWalk = false;
+  }
   if (scan_.active) {
     // Both phases are idle-gated now. The walk was assumed cheap ("one directory listing"),
     // but a manga folder holds hundreds of page files and listing one costs seconds on SD
@@ -1047,6 +1107,7 @@ void RecentBooksActivity::loop() {
     // as a press, so the Library felt completely dead while it scanned.
     const uint32_t idleBeforeWorkMs = scan_.walkDone ? THUMB_IDLE_MS : 700;
     if (millis() - lastInputMs > idleBeforeWorkMs && !RenderLock::peek()) {
+      if (!scan_.walkDone && !releaseWalkFontMemory()) return;
       const bool wasWalking = !scan_.walkDone;
       const bool done = stepLibraryScan();
       if (wasWalking && scan_.walkDone) applyLibraryScan();  // books show up now; covers follow

@@ -146,13 +146,65 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
 }
 
 bool RecentBooksStore::saveToPath(const char* path) const {
-  JsonDocument doc;
-  toJson(doc);
-  return writeDocToFile(path, doc);
+  return saveBooksToPath(recentBooks, path);
+}
+
+bool RecentBooksStore::saveBooksToPath(const std::vector<RecentBook>& books, const char* path) {
+  Storage.mkdir("/.crosspoint");
+  HalFile file;
+  if (!Storage.openFileForWrite("RBS", path, file)) return false;
+
+  constexpr char PREFIX[] = "{\"books\":[";
+  if (file.write(PREFIX, sizeof(PREFIX) - 1) != sizeof(PREFIX) - 1) {
+    LOG_ERR("RBS", "Failed to write library cache prefix");
+    return false;
+  }
+
+  bool first = true;
+  JsonDocument record;
+  for (const auto& book : books) {
+    if (!first && file.write(static_cast<uint8_t>(',')) != 1) {
+      LOG_ERR("RBS", "Failed to write library cache separator");
+      return false;
+    }
+    first = false;
+
+    // Keep peak memory proportional to one record. The generic PersistableStore path builds
+    // both the complete JsonDocument and a complete serialized String; a 100+ book Library can
+    // consume the X3's remaining heap twice over and make the next STL allocation abort.
+    record.clear();
+    record["path"] = book.path.c_str();
+    record["title"] = book.title.c_str();
+    record["author"] = book.author.c_str();
+    record["coverBmpPath"] = book.coverBmpPath.c_str();
+    if (serializeJson(record, file) == 0) {
+      LOG_ERR("RBS", "Failed to serialize library cache record");
+      return false;
+    }
+  }
+
+  constexpr char SUFFIX[] = "]}";
+  if (file.write(SUFFIX, sizeof(SUFFIX) - 1) != sizeof(SUFFIX) - 1) {
+    LOG_ERR("RBS", "Failed to write library cache suffix");
+    return false;
+  }
+  file.flush();
+  return true;
 }
 
 bool RecentBooksStore::loadFromPath(const char* path) {
+  if (!Storage.exists(path)) return false;
+  HalFile file;
+  if (!Storage.openFileForRead("RBS", path, file)) return false;
+
+  // Parse from the file stream instead of first copying the complete cache into an Arduino
+  // String. The JsonDocument is still required for backward-compatible loading, but the raw
+  // JSON no longer occupies a second equally large allocation beside it.
   JsonDocument doc;
-  if (!readDocFromFile(path, doc)) return false;
+  const DeserializationError error = deserializeJson(doc, file);
+  if (error) {
+    LOG_ERR("RBS", "JSON parse error in %s: %s", path, error.c_str());
+    return false;
+  }
   return fromJson(doc.as<JsonVariantConst>(), LIBRARY_CACHE_MAX_BOOKS);
 }

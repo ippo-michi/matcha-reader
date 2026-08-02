@@ -34,6 +34,9 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   // Same schema, different file: the library scan cache is a second store instance living at
   // its own path, so it can't use the singleton's fixed getFilePath().
   bool saveToPath(const char* path) const;
+  // Stream a library catalog directly to disk. Unlike setBooks()+saveToPath(), this does not
+  // duplicate the vector or materialize the complete JSON document/string in RAM.
+  static bool saveBooksToPath(const std::vector<RecentBook>& books, const char* path);
   bool loadFromPath(const char* path);
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);

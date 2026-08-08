@@ -88,4 +88,10 @@ class EpubReaderWordLookupActivity final : public Activity {
   static constexpr int kFullRefreshInterval = 10;
 
   void renderContentArea(const Rect& screen, int contentTop);
+
+  // Sentence mining: save the current word's context as a sentence entry.
+  void saveSentence();
+  // Show a brief "Saved!" flash on the next render.
+  bool saveFlash = false;
+  uint32_t saveFlashUntil = 0;
 };

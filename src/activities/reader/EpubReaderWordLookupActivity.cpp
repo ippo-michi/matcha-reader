@@ -11,6 +11,7 @@
 #include <WordLookup.h>
 
 #include <algorithm>
+#include <ctime>
 
 #include "CrossPointSettings.h"
 #include "DefinitionTextRenderer.h"
@@ -18,6 +19,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/SentenceMining.h"
 
 EpubReaderWordLookupActivity::EpubReaderWordLookupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                            const VerticalPage& page, std::string scanCachePath,
@@ -506,8 +508,13 @@ void EpubReaderWordLookupActivity::loop() {
     return;
   }
 
+  bool miningEnabled = CrossPointSettings::getInstance().sentenceMiningEnabled != 0;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    performLookup();
+    if (miningEnabled && hasResult) {
+      saveSentence();
+    } else {
+      performLookup();
+    }
     return;
   }
 
@@ -648,9 +655,9 @@ void EpubReaderWordLookupActivity::render(RenderLock&&) {
 
     GUI.drawHeader(renderer, headerRect, tr(STR_WORD_LOOKUP), posText.empty() ? nullptr : posText.c_str());
 
-    renderContentArea(screen, contentTop);
-
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    bool miningEnabled = CrossPointSettings::getInstance().sentenceMiningEnabled != 0;
+    auto labels = miningEnabled ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+                                : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
     renderer.displayBuffer();
@@ -663,10 +670,20 @@ void EpubReaderWordLookupActivity::render(RenderLock&&) {
     renderer.fillRect(0, contentTop, renderer.getScreenWidth(), physBottom - contentTop, false);
     // Redraw the header so the position counter updates (drawHeader clears it).
     GUI.drawHeader(renderer, headerRect, tr(STR_WORD_LOOKUP), posText.empty() ? nullptr : posText.c_str());
-    const auto labels2 = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    bool miningEnabled = CrossPointSettings::getInstance().sentenceMiningEnabled != 0;
+    auto labels2 = miningEnabled ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+                                 : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels2.btn1, labels2.btn2, labels2.btn3, labels2.btn4);
 
     renderContentArea(screen, contentTop);
+
+    // Show "Saved!" flash overlay.
+    if (saveFlash && millis() < saveFlashUntil) {
+      renderer.drawFilledRect(screen.x + screen.width / 2 - 40, contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 20, 80, 24, true);
+      renderer.drawText(SMALL_FONT_ID, screen.x + screen.width / 2 - 20, contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 22, tr(STR_SAVED).c_str(), true);
+    } else {
+      saveFlash = false;  // Clear flash after it expires
+    }
 
     fastRefreshCount++;
     if (fastRefreshCount >= kFullRefreshInterval) {
@@ -680,4 +697,41 @@ void EpubReaderWordLookupActivity::render(RenderLock&&) {
   // The framebuffer owns the finished pixels; keeping the decompressed glyph slab until the
   // next keypress only fragments the heap while the dictionary caches are resident.
   if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseAllFontMemory();
+}
+
+void EpubReaderWordLookupActivity::saveSentence() {
+  if (!hasResult || scan.selectableGlyphs.empty()) return;
+
+  // Build the sentence context text around the selected word.
+  std::string text = buildLookupText(static_cast<size_t>(cursorIndex));
+  if (text.empty()) return;
+
+  // Build a timestamp for ordering.
+  time_t now = time(nullptr);
+  char timeBuf[32];
+  struct tm tmBuf;
+  localtime_r(&now, &tmBuf);
+  strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &tmBuf);
+
+  // Build a CFI-like identifier from spine/page/cursor for uniqueness.
+  std::string cfi = "spine:" + std::to_string(scanSpine) + "/page:" + std::to_string(scanPage) + "/cursor:" + std::to_string(cursorIndex);
+
+  sentence_mining::SavedSentence s;
+  s.word = resultHeadword;
+  s.definition = resultDefinition;
+  s.sentence = text;
+  s.book_title = "";  // Could be populated from Epub::getTitle() if passed through
+  s.chapter = "";
+  s.cfi = cfi;
+  s.page_number = scanPage;
+  s.timestamp = timeBuf;
+
+  // Save to the sentences.json file.
+  std::string savePath = "/fs/sentences.json";
+  sentence_mining::SentenceMining::instance().saveSentence(s, savePath);
+
+  // Show "Saved!" flash.
+  saveFlash = true;
+  saveFlashUntil = millis() + 1500;
+  requestUpdate();
 }

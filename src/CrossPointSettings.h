@@ -292,6 +292,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Sentence Mining: save surrounding sentence as MD file during word lookup (0 = off, 1 = on)
+  uint8_t sentenceMiningEnabled = 0;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

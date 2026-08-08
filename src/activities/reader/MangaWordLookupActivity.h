@@ -61,4 +61,9 @@ class MangaWordLookupActivity final : public Activity {
   static constexpr int kFullRefreshInterval = 10;
 
   void renderContentArea(const Rect& screen, int contentTop);
+  void saveSentence();
+
+  // Save flash overlay.
+  bool saveFlash = false;
+  uint32_t saveFlashUntil = 0;
 };

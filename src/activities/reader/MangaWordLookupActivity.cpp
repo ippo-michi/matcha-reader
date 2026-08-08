@@ -420,8 +420,9 @@ void MangaWordLookupActivity::render(RenderLock&&) {
     GUI.drawHeader(renderer, headerRect, tr(STR_WORD_LOOKUP), posText.empty() ? nullptr : posText.c_str());
     renderContentArea(screen, contentTop);
     bool miningEnabled = CrossPointSettings::getInstance().sentenceMiningEnabled != 0;
-    auto labels = miningEnabled ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
-                                : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    auto labels = miningEnabled
+                      ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+                      : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
     initialRenderDone = true;
@@ -431,15 +432,18 @@ void MangaWordLookupActivity::render(RenderLock&&) {
     renderer.fillRect(0, contentTop, renderer.getScreenWidth(), physBottom - contentTop, false);
     GUI.drawHeader(renderer, headerRect, tr(STR_WORD_LOOKUP), posText.empty() ? nullptr : posText.c_str());
     bool miningEnabled = CrossPointSettings::getInstance().sentenceMiningEnabled != 0;
-    auto labels2 = miningEnabled ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
-                                 : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    auto labels2 = miningEnabled
+                       ? mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE_SENTENCE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+                       : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels2.btn1, labels2.btn2, labels2.btn3, labels2.btn4);
     renderContentArea(screen, contentTop);
 
     // Show "Saved!" flash overlay.
     if (saveFlash && millis() < saveFlashUntil) {
-      renderer.drawFilledRect(screen.x + screen.width / 2 - 40, contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 20, 80, 24, true);
-      renderer.drawText(SMALL_FONT_ID, screen.x + screen.width / 2 - 20, contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 22, tr(STR_SAVED).c_str(), true);
+      renderer.drawFilledRect(screen.x + screen.width / 2 - 40,
+                              contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 20, 80, 24, true);
+      renderer.drawText(SMALL_FONT_ID, screen.x + screen.width / 2 - 20,
+                        contentTop + renderer.getLineHeight(NOTOSERIF_16_FONT_ID) + 22, tr(STR_SAVED).c_str(), true);
     } else {
       saveFlash = false;  // Clear flash after it expires
     }
@@ -469,7 +473,8 @@ void MangaWordLookupActivity::saveSentence() {
   strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &tmBuf);
 
   // Build a CFI-like identifier from page/panel/cursor for uniqueness.
-  std::string cfi = "page:" + std::to_string(scanPage) + "/panel:" + std::to_string(scanPanel) + "/cursor:" + std::to_string(cursorIndex);
+  std::string cfi = "page:" + std::to_string(scanPage) + "/panel:" + std::to_string(scanPanel) +
+                    "/cursor:" + std::to_string(cursorIndex);
 
   sentence_mining::SavedSentence s;
   s.word = resultHeadword;
